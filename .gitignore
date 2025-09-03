@@ -9,6 +9,7 @@ __pycache__/
 *.sqlite
 *.h5
 .DS_Store
+.venv
 
 # игнорировать домашний каталог
 /Users/
