@@ -1,0 +1,14 @@
+venv/
+.env
+__pycache__/
+*.pyc
+
+*.csv
+*.xlsx
+*.pkl
+*.sqlite
+*.h5
+.DS_Store
+
+# игнорировать домашний каталог
+/Users/

@@ -1,0 +1,94 @@
+version: "3.9"
+name: telegram-fitness-bot
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-app}
+      POSTGRES_USER: ${POSTGRES_USER:-app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-app}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  minio:
+    image: quay.io/minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minio123}
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # Console
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  createbuckets:
+    image: quay.io/minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      /usr/bin/mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minio} ${MINIO_ROOT_PASSWORD:-minio123};
+      /usr/bin/mc mb -p local/${S3_BUCKET:-fitness-media} || true;
+      /usr/bin/mc anonymous set download local/${S3_BUCKET:-fitness-media} || true;
+      "
+    restart: "no"
+
+  # api: &pyapp
+  #   build:
+  #     context: .
+  #     dockerfile: deploy/Dockerfile
+  #   environment:
+  #     DATABASE_URL: postgresql+psycopg://$${POSTGRES_USER}:$${POSTGRES_PASSWORD}@postgres:5432/$${POSTGRES_DB}
+  #     REDIS_URL: redis://redis:6379/0
+  #     S3_ENDPOINT: http://minio:9000
+  #     S3_BUCKET: ${S3_BUCKET:-fitness-media}
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_healthy
+  #   command: ["sleep", "infinity"]  # replace on Step 1 with uvicorn
+  #   ports:
+  #     - "8000:8000"
+  #   restart: unless-stopped
+
+  # bot:
+  #   <<: *pyapp
+  #   ports: []
+  #   command: ["sleep", "infinity"]  # replace on Step 1 with python -m app.telegram.bot
+
+volumes:
+  pg_data:
+  redis_data:
+  minio_data:
