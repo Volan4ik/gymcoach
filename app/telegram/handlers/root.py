@@ -11,6 +11,11 @@ from app.telegram.keyboards.reply import (
     BTN_REMIND, BTN_LOG, BTN_PRIVACY,
 )
 
+from app.db.session import get_session
+from app.db.models import User
+from sqlmodel import select
+from app.telegram.handlers.onboarding import start_onboarding, is_profile_complete
+
 router = Router(name="root")
 
 # --- Утилиты для экранов ---
@@ -38,55 +43,82 @@ async def show_settings_screen(message: Message) -> None:
 
 # --- Старт/главная ---
 
-@router.message(CommandStart())
+@router.message(F.chat.type == "private", CommandStart())
 async def cmd_start(message: Message, state: FSMContext) -> None:
-    # здесь можно сделать upsert пользователя в БД
-    await state.clear()              # сбрасываем любые незавершенные сцены
+    # upsert пользователя в БД
+    with get_session() as s:
+        u = s.exec(select(User).where(User.tg_id == message.from_user.id)).first()
+        if not u:
+            u = User(tg_id=message.from_user.id, tz="UTC")
+            s.add(u)
+            s.commit()
+            s.refresh(u)
+
+    # если профиль неполный — запускаем онбординг
+    if not is_profile_complete(u):
+        await start_onboarding(message, state)
+        return
+
+    # иначе просто показываем главную
+    await state.clear()
     await show_main_screen(message)
 
 # Кнопка «Главная» (текст) и команда /home
-@router.message(F.text == BTN_HOME)
-@router.message(Command("home"))
+@router.message(F.chat.type == "private", F.text == BTN_HOME)
+@router.message(F.chat.type == "private", Command("home"))
 async def go_home(message: Message, state: FSMContext) -> None:
     await state.clear()
     await show_main_screen(message)
 
 # --- Навигация к настройкам ---
 
-@router.message(F.text == BTN_SETTINGS)
-@router.message(Command("settings"))
+@router.message(F.chat.type == "private", F.text == BTN_SETTINGS)
+@router.message(F.chat.type == "private", Command("settings"))
 async def open_settings(message: Message, state: FSMContext) -> None:
-    # если есть активная сцена (ввод числа и т.п.), лучше ее завершить
     await state.clear()
     await show_settings_screen(message)
 
-@router.message(F.text == BTN_BACK)
+@router.message(F.chat.type == "private", F.text == BTN_BACK)
 async def back_to_main(message: Message, state: FSMContext) -> None:
     await state.clear()
     await show_main_screen(message)
 
 # --- Пункты главного меню (как команды, так и кнопки) ---
 
-@router.message(Command("me"))
-@router.message(F.text == BTN_ME)
+@router.message(F.chat.type == "private", Command("me"))
+@router.message(F.chat.type == "private", F.text == BTN_ME)
 async def open_profile(message: Message) -> None:
-    # TODO: достать профиль из БД и красиво вывести
-    await message.answer("👤 Профиль (демо). Тут будут TZ/цель/опыт/инвентарь.", reply_markup=main_kb())
+    # ⬇️ Реально читаем профиль из БД
+    with get_session() as s:
+        u = s.exec(select(User).where(User.tg_id == message.from_user.id)).first()
+    if not u:
+        await message.answer("Профиль не найден. Нажми /start, чтобы создать его.", reply_markup=main_kb())
+        return
 
-@router.message(Command("plan"))
-@router.message(F.text == BTN_PLAN)
+    injuries = (u.injuries_json or {}).get("text", "—")
+    text = (
+        "👤 *Профиль*\n"
+        f"• TZ: *{u.tz or '—'}*\n"
+        f"• Цель: *{u.goal or '—'}*\n"
+        f"• Опыт: *{u.level or '—'}*\n"
+        f"• Оборудование: *{u.equipment or '—'}*\n"
+        f"• Травмы: _{injuries}_\n\n"
+        "Чтобы изменить — зайди в /settings."
+    )
+    await message.answer(text, reply_markup=main_kb(), parse_mode="Markdown")
+
+@router.message(F.chat.type == "private", Command("plan"))
+@router.message(F.chat.type == "private", F.text == BTN_PLAN)
 async def open_plan(message: Message) -> None:
-    # TODO: мастер плана или показ текущего
     await message.answer("📅 План (демо). Тут будет мастер создания/просмотра.", reply_markup=main_kb())
 
-@router.message(Command("today"))
-@router.message(F.text == BTN_TODAY)
+@router.message(F.chat.type == "private", Command("today"))
+@router.message(F.chat.type == "private", F.text == BTN_TODAY)
 async def open_today(message: Message) -> None:
-    # TODO: запуск/продолжение WorkoutSession
     await message.answer("🔥 Сегодня (демо). Запуск тренировки и карточки упражнений.", reply_markup=main_kb())
 
-@router.message(Command("help"))
-@router.message(F.text == BTN_HELP)
+@router.message(F.chat.type == "private", Command("help"))
+@router.message(F.chat.type == "private", F.text == BTN_HELP)
 async def open_help(message: Message) -> None:
     await message.answer(
         "❓ *Помощь*\n"
@@ -101,20 +133,17 @@ async def open_help(message: Message) -> None:
 
 # --- Пункты меню «Настройки» ---
 
-@router.message(Command("remind"))
-@router.message(F.text == BTN_REMIND)
+@router.message(F.chat.type == "private", Command("remind"))
+@router.message(F.chat.type == "private", F.text == BTN_REMIND)
 async def open_remind(message: Message) -> None:
-    # TODO: показать сетку дней/времен (Reply/Inline), сохранить окна
     await message.answer("⏰ Напоминания (демо). Выбор дней и времени.", reply_markup=settings_kb())
 
-@router.message(Command("log"))
-@router.message(F.text == BTN_LOG)
+@router.message(F.chat.type == "private", Command("log"))
+@router.message(F.chat.type == "private", F.text == BTN_LOG)
 async def open_log(message: Message) -> None:
-    # TODO: лист последних сетов, кнопки «Редактировать/Удалить»
     await message.answer("📜 Журнал (демо). Последние тренировки/сеты.", reply_markup=settings_kb())
 
-@router.message(Command("privacy"))
-@router.message(F.text == BTN_PRIVACY)
+@router.message(F.chat.type == "private", Command("privacy"))
+@router.message(F.chat.type == "private", F.text == BTN_PRIVACY)
 async def open_privacy(message: Message) -> None:
-    # TODO: /export и /wipe с двойным подтверждением
     await message.answer("🔐 Приватность (демо). Экспорт/удаление данных.", reply_markup=settings_kb())
